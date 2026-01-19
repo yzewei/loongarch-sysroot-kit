@@ -9,31 +9,50 @@ MIRROR="http://ftp.ports.debian.org/debian-ports"
 
 echo "=== 0. Prepare Build Env ==="
 sudo apt-get update
-# 新增 binfmt-support 以便支持内核格式注册
+# 安装依赖
 sudo apt-get install -y wget curl binfmt-support
 
 echo ">>> Installing QEMU v10.0.4 (User Specified)..."
-wget -q -O qemu-package.tar.gz https://github.com/loong64/binfmt/releases/download/deploy%2Fv10.0.4-10/qemu_v10.0.4_linux-loong64.tar.gz
-tar -xzf qemu-package.tar.gz
-# 查找并移动，统一命名为 qemu-loongarch64-static
-find . -maxdepth 1 -type f -name "qemu-loongarch64*" ! -name "*.tar.gz" -exec sudo mv {} /usr/bin/qemu-loongarch64-static \;
-sudo chmod +x /usr/bin/qemu-loongarch64-static
-rm qemu-package.tar.gz
+# 1. 下载 (去掉 -q 显示进度，方便排错)
+wget -O qemu-package.tar.gz https://github.com/loong64/binfmt/releases/download/deploy/v10.0.4-10/qemu_v10.0.4_linux-amd64.tar.gz
 
-# === 核心修复：手动注册 binfmt ===
-# 告诉内核：遇到 LoongArch64 (Magic: \x7fELF...0x02...0x102) 就用 /usr/bin/qemu-loongarch64-static 打开
+# 2. 解压 (使用 -v 查看解压出了什么)
+echo "Extracting tarball..."
+tar -xzvf qemu-package.tar.gz
+
+# 3. 智能查找并安装
+# 移除 -maxdepth 1，改为全目录递归搜索，确保能找到藏在子文件夹里的二进制
+echo "Searching for qemu binary..."
+FOUND_BIN=$(find . -type f -name "qemu-loongarch64*" ! -name "*.tar.gz" | head -n 1)
+
+if [ -z "$FOUND_BIN" ]; then
+    echo "Error: Could not find qemu-loongarch64 binary in the extracted files!"
+    echo "Listing current directory for debug:"
+    ls -R
+    exit 1
+fi
+
+echo "Found binary at: $FOUND_BIN"
+sudo mv "$FOUND_BIN" /usr/bin/qemu-loongarch64-static
+sudo chmod +x /usr/bin/qemu-loongarch64-static
+
+# 清理
+rm qemu-package.tar.gz
+echo "QEMU Installed Successfully:"
+/usr/bin/qemu-loongarch64-static --version
+
+# === 4. 注册 binfmt (关键步骤) ===
 echo ">>> Registering LoongArch binfmt..."
 if [ -f /proc/sys/fs/binfmt_misc/register ]; then
-    # 如果已存在先移除，防止冲突
+    # 清理旧注册
     if [ -f /proc/sys/fs/binfmt_misc/qemu-loongarch64 ]; then
         echo -1 | sudo tee /proc/sys/fs/binfmt_misc/qemu-loongarch64 > /dev/null
     fi
-    # 注册魔法数 (LoongArch64 ELF Magic)
+    # 注册 Magic Number
     echo ':qemu-loongarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x02\x01:\xff\xff\xff\xff\xff\xff\xff\xfc\x00\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-loongarch64-static:' | sudo tee /proc/sys/fs/binfmt_misc/register > /dev/null
-    echo "Binfmt registered successfully."
+    echo "Binfmt registered."
 else
-    echo "Warning: binfmt_misc not mounted. Using docker fallback if available..."
-    # 备选方案：如果手动注册失败，尝试用 Docker 注册
+    echo "Warning: binfmt_misc not mounted. Using docker fallback..."
     docker run --rm --privileged multiarch/qemu-user-static --reset -p yes || true
 fi
 
@@ -62,11 +81,9 @@ echo "Running debootstrap..."
 sudo debootstrap --arch="$ARCH" --foreign --keyring=/usr/share/keyrings/debian-ports-archive-keyring.gpg --include="$PACKAGES" "$DISTRO" "$TARGET_DIR" "$MIRROR"
 
 echo "=== 2. Config (Second Stage) ==="
-# 复制 QEMU 到 chroot 内部 (必须与注册路径一致)
 sudo cp /usr/bin/qemu-loongarch64-static "$TARGET_DIR/usr/bin/"
 
 echo "Running second-stage configuration..."
-# 此时内核已经认识 LoongArch 格式，这里就能跑通了
 sudo chroot "$TARGET_DIR" /debootstrap/debootstrap --second-stage
 
 echo "=== 3. Clean & Fix ==="
