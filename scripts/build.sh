@@ -100,9 +100,46 @@ sudo rm "$TARGET_DIR/usr/bin/qemu-loongarch64-static"
 echo "Fixing symlinks..."
 if [ -f "scripts/fix_links.py" ]; then sudo python3 scripts/fix_links.py "$TARGET_DIR"; fi
 
-echo "=== 4. Package ==="
-TAR_NAME="debian-${DISTRO}-${ARCH}-sysroot.tar.gz"
-sudo tar -czf "$TAR_NAME" -C "$TARGET_DIR" .
-sudo chown $USER:$USER "$TAR_NAME"
+# ==========================================
+# 新增: 4. Package Runtime Libs (Box64 专用精简包)
+# ==========================================
+echo "=== 4. Package Runtime Libs (For Box64) ==="
+RUNTIME_TAR="debian-${DISTRO}-${ARCH}-runtime-libs.tar.gz"
+TEMP_RUNTIME="runtime-libs-temp"
 
-echo "Build Success! Artifact: $TAR_NAME"
+# 1. 创建临时目录结构
+echo "Creating minimal runtime structure..."
+rm -rf "$TEMP_RUNTIME"
+mkdir -p "$TEMP_RUNTIME/usr"
+
+# 2. 只复制 Box64 运行需要的关键库目录
+# 使用 cp -a 极其重要，必须保留软链接关系！
+echo "Copying libraries..."
+sudo cp -a "$TARGET_DIR/lib" "$TEMP_RUNTIME/"
+sudo cp -a "$TARGET_DIR/lib64" "$TEMP_RUNTIME/"
+sudo cp -a "$TARGET_DIR/usr/lib" "$TEMP_RUNTIME/usr/"
+sudo cp -a "$TARGET_DIR/usr/lib64" "$TEMP_RUNTIME/usr/"
+# 复制 etc 是为了 ld.so.conf 等配置
+sudo cp -a "$TARGET_DIR/etc" "$TEMP_RUNTIME/"
+
+# 3. 打包精简版
+echo "Packaging Runtime Artifact: $RUNTIME_TAR ..."
+sudo tar -czf "$RUNTIME_TAR" -C "$TEMP_RUNTIME" .
+sudo chown $USER:$USER "$RUNTIME_TAR"
+
+# 4. 清理临时目录
+sudo rm -rf "$TEMP_RUNTIME"
+
+# ==========================================
+# 原有: 5. Package Full Sysroot (完整开发包)
+# ==========================================
+echo "=== 5. Package Full Sysroot ==="
+FULL_TAR="debian-${DISTRO}-${ARCH}-sysroot.tar.gz"
+echo "Packaging Full Artifact: $FULL_TAR ..."
+sudo tar -czf "$FULL_TAR" -C "$TARGET_DIR" .
+sudo chown $USER:$USER "$FULL_TAR"
+
+echo "Build Success!"
+echo "Generated Artifacts:"
+echo "1. $FULL_TAR (Full Sysroot)"
+echo "2. $RUNTIME_TAR (Runtime Libs Only)"

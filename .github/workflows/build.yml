@@ -19,10 +19,10 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: loongarch64
+      # ❌ 删除这一步，因为 build.sh 里已经手动处理了 QEMU 和 binfmt
+      # - name: Set up QEMU
+      #   uses: docker/setup-qemu-action@v3
+      #   ...
 
       - name: Run Build Script
         run: |
@@ -30,24 +30,27 @@ jobs:
           chmod +x scripts/build.sh
           
           echo "2. Running script now... (This will take time)"
+          # 这个脚本会自动搞定 QEMU 安装、构建、生成两个 tar.gz
           ./scripts/build.sh
 
-      # 修改点：不再使用 ls 命令找文件，直接让 upload 插件去匹配
+      # Upload Artifact (供调试或非 Release 分支下载)
       - name: Upload Artifact (Manual/Branch Build)
         if: (!startsWith(github.ref, 'refs/tags/'))
         uses: actions/upload-artifact@v4
         with:
           name: loongarch-sysroot-debug
-          # 使用通配符，它会自动找到生成的 tar.gz
+          # ✅ 这里会自动抓取所有生成的 .tar.gz 文件
           path: ./*.tar.gz
           if-no-files-found: error
           retention-days: 7
 
+      # Release (正式发布)
       - name: Create Release and Upload Asset
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
           name: LoongArch Sysroot ${{ github.ref_name }}
+          # ✅ 这里也会自动把两个文件都上传到 Release 页面
           files: ./*.tar.gz
           draft: false
           prerelease: false
