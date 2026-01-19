@@ -9,25 +9,21 @@ MIRROR="http://ftp.ports.debian.org/debian-ports"
 
 echo "=== 0. Prepare Build Env ==="
 sudo apt-get update
-# 安装依赖
 sudo apt-get install -y wget curl binfmt-support
 
 echo ">>> Installing QEMU v10.0.4 (User Specified)..."
-# 1. 下载 (去掉 -q 显示进度，方便排错)
+# 注意：这里使用的是 linux-amd64 包（在 x86 主机上运行），这是正确的
 wget -O qemu-package.tar.gz https://github.com/loong64/binfmt/releases/download/deploy/v10.0.4-10/qemu_v10.0.4_linux-amd64.tar.gz
 
-# 2. 解压 (使用 -v 查看解压出了什么)
 echo "Extracting tarball..."
 tar -xzvf qemu-package.tar.gz
 
-# 3. 智能查找并安装
-# 移除 -maxdepth 1，改为全目录递归搜索，确保能找到藏在子文件夹里的二进制
 echo "Searching for qemu binary..."
+# 递归查找 qemu-loongarch64
 FOUND_BIN=$(find . -type f -name "qemu-loongarch64*" ! -name "*.tar.gz" | head -n 1)
 
 if [ -z "$FOUND_BIN" ]; then
-    echo "Error: Could not find qemu-loongarch64 binary in the extracted files!"
-    echo "Listing current directory for debug:"
+    echo "Error: Could not find qemu-loongarch64 binary!"
     ls -R
     exit 1
 fi
@@ -35,13 +31,12 @@ fi
 echo "Found binary at: $FOUND_BIN"
 sudo mv "$FOUND_BIN" /usr/bin/qemu-loongarch64-static
 sudo chmod +x /usr/bin/qemu-loongarch64-static
-
-# 清理
 rm qemu-package.tar.gz
+
 echo "QEMU Installed Successfully:"
 /usr/bin/qemu-loongarch64-static --version
 
-# === 4. 注册 binfmt (关键步骤) ===
+# === 4. 注册 binfmt (关键修复) ===
 echo ">>> Registering LoongArch binfmt..."
 if [ -f /proc/sys/fs/binfmt_misc/register ]; then
     # 清理旧注册
@@ -49,8 +44,12 @@ if [ -f /proc/sys/fs/binfmt_misc/register ]; then
         echo -1 | sudo tee /proc/sys/fs/binfmt_misc/qemu-loongarch64 > /dev/null
     fi
     # 注册 Magic Number
-    echo ':qemu-loongarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x02\x01:\xff\xff\xff\xff\xff\xff\xff\xfc\x00\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-loongarch64-static:' | sudo tee /proc/sys/fs/binfmt_misc/register > /dev/null
-    echo "Binfmt registered."
+    # !!! 关键修改：在末尾增加了 :OCF 标志 !!!
+    # O (Open): 加载时打开文件
+    # C (Credentials): 保持凭证
+    # F (Fix): 允许在 chroot 中使用宿主机的解释器
+    echo ':qemu-loongarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x02\x01:\xff\xff\xff\xff\xff\xff\xff\xfc\x00\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-loongarch64-static:OCF' | sudo tee /proc/sys/fs/binfmt_misc/register > /dev/null
+    echo "Binfmt registered with OCF flags."
 else
     echo "Warning: binfmt_misc not mounted. Using docker fallback..."
     docker run --rm --privileged multiarch/qemu-user-static --reset -p yes || true
@@ -74,7 +73,8 @@ sudo make install
 cd ..
 
 echo "=== 1. Start Build Debootstrap (First Stage) ==="
-PACKAGES="libc6,libstdc++6,libgcc-s1,libssl3t64,zlib1g,liblzma5,libzstd1,libbz2-1.0,libcrypt1,perl-base"
+# 确保包含 bash，因为后面我们要强制用它
+PACKAGES="libc6,libstdc++6,libgcc-s1,libssl3t64,zlib1g,liblzma5,libzstd1,libbz2-1.0,libcrypt1,perl-base,bash"
 sudo mkdir -p "$TARGET_DIR"
 
 echo "Running debootstrap..."
@@ -84,7 +84,9 @@ echo "=== 2. Config (Second Stage) ==="
 sudo cp /usr/bin/qemu-loongarch64-static "$TARGET_DIR/usr/bin/"
 
 echo "Running second-stage configuration..."
-sudo chroot "$TARGET_DIR" /debootstrap/debootstrap --second-stage
+# !!! 关键修改：显式调用 /bin/bash !!!
+# 这样可以绕过 /bin/sh (dash) 对参数的敏感检查
+sudo chroot "$TARGET_DIR" /bin/bash /debootstrap/debootstrap --second-stage
 
 echo "=== 3. Clean & Fix ==="
 sudo rm -rf "$TARGET_DIR/var/cache/apt/archives/*"
