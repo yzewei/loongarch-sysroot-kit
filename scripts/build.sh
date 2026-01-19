@@ -9,11 +9,27 @@ MIRROR="http://ftp.ports.debian.org/debian-ports"
 
 echo "=== 0. Prepare Build Env ==="
 sudo apt-get update
-sudo apt-get install -y qemu-user-static wget curl
+sudo apt-get install -y wget curl
+
+echo ">>> Installing QEMU v10.0.4 (User Specified)..."
+# 1. 下载你指定的 tar.gz 包
+wget -q -O qemu-package.tar.gz https://github.com/loong64/binfmt/releases/download/deploy%2Fv10.0.4-10/qemu_v10.0.4_linux-amd64.tar.gz
+
+# 2. 解压
+tar -xzf qemu-package.tar.gz
+
+# 3. 安装 (自动找到解压出的二进制文件并重命名移入 /usr/bin)
+# 注意：解压出来的名字可能是 qemu-loongarch64，我们需要把它重命名为 qemu-loongarch64-static 以配合后续脚本
+find . -maxdepth 1 -type f -name "qemu-loongarch64*" ! -name "*.tar.gz" -exec sudo mv {} /usr/bin/qemu-loongarch64-static \;
+
+# 4. 赋予执行权限并清理
+sudo chmod +x /usr/bin/qemu-loongarch64-static
+rm qemu-package.tar.gz
+echo "QEMU installed version:"
+/usr/bin/qemu-loongarch64-static --version
 
 echo ">>> Detecting and installing latest Debian Ports Keyring..."
 REPO_URL="http://ftp.debian.org/debian/pool/main/d/debian-ports-archive-keyring/"
-# 获取最新包名
 LATEST_DEB=$(curl -s $REPO_URL | grep -o 'debian-ports-archive-keyring_[0-9.]\+_all.deb' | sort -V | tail -n 1)
 
 if [ -z "$LATEST_DEB" ]; then
@@ -35,20 +51,19 @@ sudo make install
 cd ..
 
 echo "=== 1. Start Build Debootstrap (First Stage) ==="
-# === 关键修改点 ===
-# libssl3t64 -> 必须带 t64 (验证通过)
-# libzstd1t64 -> 改回 libzstd1 (仓库里没改名)
-# libcrypt1t64 -> 改回 libcrypt1 (仓库里没改名)
+# 包列表 (已修正无误)
 PACKAGES="libc6,libstdc++6,libgcc-s1,libssl3t64,zlib1g,liblzma5,libzstd1,libbz2-1.0,libcrypt1,perl-base"
 
 sudo mkdir -p "$TARGET_DIR"
 
 echo "Running debootstrap..."
-# 单行命令，确保不出错
 sudo debootstrap --arch="$ARCH" --foreign --keyring=/usr/share/keyrings/debian-ports-archive-keyring.gpg --include="$PACKAGES" "$DISTRO" "$TARGET_DIR" "$MIRROR"
 
 echo "=== 2. Config (Second Stage) ==="
+# 复制我们刚才下载的新版 QEMU 进 chroot 环境
 sudo cp /usr/bin/qemu-loongarch64-static "$TARGET_DIR/usr/bin/"
+
+echo "Running second-stage configuration..."
 sudo chroot "$TARGET_DIR" /debootstrap/debootstrap --second-stage
 
 echo "=== 3. Clean & Fix ==="
