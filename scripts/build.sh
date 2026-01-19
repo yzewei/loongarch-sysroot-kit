@@ -12,14 +12,14 @@ sudo apt-get update
 sudo apt-get install -y wget curl binfmt-support
 
 echo ">>> Installing QEMU v10.0.4 (User Specified)..."
-# 注意：这里使用的是 linux-amd64 包（在 x86 主机上运行），这是正确的
-wget -O qemu-package.tar.gz https://github.com/loong64/binfmt/releases/download/deploy/v10.0.4-10/qemu_v10.0.4_linux-amd64.tar.gz
+# 使用 v10.0.4 linux-amd64 包 (包含静态二进制文件)
+wget -O qemu-package.tar.gz https://github.com/loong64/binfmt/releases/download/deploy%2Fv10.0.4-10/qemu_v10.0.4_linux-amd64.tar.gz
 
 echo "Extracting tarball..."
 tar -xzvf qemu-package.tar.gz
 
 echo "Searching for qemu binary..."
-# 递归查找 qemu-loongarch64
+# 递归查找 qemu-loongarch64-static
 FOUND_BIN=$(find . -type f -name "qemu-loongarch64*" ! -name "*.tar.gz" | head -n 1)
 
 if [ -z "$FOUND_BIN" ]; then
@@ -36,18 +36,13 @@ rm qemu-package.tar.gz
 echo "QEMU Installed Successfully:"
 /usr/bin/qemu-loongarch64-static --version
 
-# === 4. 注册 binfmt (关键修复) ===
+# === 注册 binfmt (必须保留 OCF 标志) ===
 echo ">>> Registering LoongArch binfmt..."
 if [ -f /proc/sys/fs/binfmt_misc/register ]; then
-    # 清理旧注册
     if [ -f /proc/sys/fs/binfmt_misc/qemu-loongarch64 ]; then
         echo -1 | sudo tee /proc/sys/fs/binfmt_misc/qemu-loongarch64 > /dev/null
     fi
-    # 注册 Magic Number
-    # !!! 关键修改：在末尾增加了 :OCF 标志 !!!
-    # O (Open): 加载时打开文件
-    # C (Credentials): 保持凭证
-    # F (Fix): 允许在 chroot 中使用宿主机的解释器
+    # 注册 Magic Number (保留 OCF 标志以解决 chroot 权限和打开问题)
     echo ':qemu-loongarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x02\x01:\xff\xff\xff\xff\xff\xff\xff\xfc\x00\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-loongarch64-static:OCF' | sudo tee /proc/sys/fs/binfmt_misc/register > /dev/null
     echo "Binfmt registered with OCF flags."
 else
@@ -73,7 +68,7 @@ sudo make install
 cd ..
 
 echo "=== 1. Start Build Debootstrap (First Stage) ==="
-# 确保包含 bash，因为后面我们要强制用它
+# 必须包含 bash
 PACKAGES="libc6,libstdc++6,libgcc-s1,libssl3t64,zlib1g,liblzma5,libzstd1,libbz2-1.0,libcrypt1,perl-base,bash"
 sudo mkdir -p "$TARGET_DIR"
 
@@ -84,9 +79,9 @@ echo "=== 2. Config (Second Stage) ==="
 sudo cp /usr/bin/qemu-loongarch64-static "$TARGET_DIR/usr/bin/"
 
 echo "Running second-stage configuration..."
-# !!! 关键修改：显式调用 /bin/bash !!!
-# 这样可以绕过 /bin/sh (dash) 对参数的敏感检查
-sudo chroot "$TARGET_DIR" /bin/bash /debootstrap/debootstrap --second-stage
+# !!! 核心修复点 !!!
+# 使用 bash -c 将命令包裹起来，避免参数歧义
+sudo chroot "$TARGET_DIR" /bin/bash -c "/debootstrap/debootstrap --second-stage"
 
 echo "=== 3. Clean & Fix ==="
 sudo rm -rf "$TARGET_DIR/var/cache/apt/archives/*"
