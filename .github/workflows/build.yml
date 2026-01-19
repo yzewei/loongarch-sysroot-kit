@@ -5,6 +5,8 @@ on:
   push:
     tags:
       - "v*"
+    branches:
+      - "main"
 
 permissions:
   contents: write
@@ -23,25 +25,22 @@ jobs:
           platforms: loongarch64
 
       - name: Run Build Script
-        # 运行你仓库里的脚本
         run: |
+          echo "1. Giving permission..."
           chmod +x scripts/build.sh
+          
+          echo "2. Running script now... (This will take time)"
+          ./scripts/build.sh
 
-      # 获取构建脚本生成的具体文件名 (防止文件名变动导致找不到)
-      - name: Get Filename
-        id: file_name
-        run: |
-          FILE=$(ls *.tar.gz | head -n 1)
-          echo "artifact_path=$FILE" >> $GITHUB_ENV
-          echo "Found artifact: $FILE"
-
-      # --- 分支逻辑：如果是手动触发 (非 Tag)，只上传 Artifact 供下载测试 ---
-      - name: Upload Artifact (Manual Build)
+      # 修改点：不再使用 ls 命令找文件，直接让 upload 插件去匹配
+      - name: Upload Artifact (Manual/Branch Build)
         if: (!startsWith(github.ref, 'refs/tags/'))
         uses: actions/upload-artifact@v4
         with:
           name: loongarch-sysroot-debug
-          path: ${{ env.artifact_path }}
+          # 使用通配符，它会自动找到生成的 tar.gz
+          path: ./*.tar.gz
+          if-no-files-found: error
           retention-days: 7
 
       - name: Create Release and Upload Asset
@@ -49,7 +48,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           name: LoongArch Sysroot ${{ github.ref_name }}
-          files: ${{ env.artifact_path }}
+          files: ./*.tar.gz
           draft: false
           prerelease: false
           generate_release_notes: true

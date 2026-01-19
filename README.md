@@ -1,6 +1,6 @@
 # LoongArch Sysroot Builder 🐉
 
-[![Build & Release Sysroot](https://github.com/YOUR_USERNAME/loongarch-sysroot-builder/actions/workflows/build-sysroot.yml/badge.svg)](https://github.com/YOUR_USERNAME/loongarch-sysroot-builder/actions/workflows/build-sysroot.yml)
+[![Build & Release Sysroot](https://github.com/yzewei/debian-loong64-sysroot/actions/workflows/build.yml/badge.svg)](https://github.com/yzewei/debian-loong64-sysroot/actions/workflows/build.yml)
 
 **Automated CI builder for a minimal, clean Debian LoongArch (loong64) sysroot.**
 
