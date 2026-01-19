@@ -1,137 +1,245 @@
 #!/bin/bash
 set -e
 
-# env Larch
+# ================= Configuration =================
 ARCH="loong64"
 DISTRO="sid"
 TARGET_DIR="sysroot-loong64"
-MIRROR="http://ftp.ports.debian.org/debian-ports"
+# loong64 使用 debian-ports；可用环境变量 MIRROR 覆盖
+MIRROR="${MIRROR:-http://ftp.ports.debian.org/debian-ports}"
+
+# ✅ 包列表 (保持不变)
+VERIFIED_PKGS="ca-certificates,wget,curl,perl-base,bash,usr-is-merged,libc6,libstdc++6,libgcc-s1,libssl3t64,zlib1g,liblzma5,libzstd1,libbz2-1.0,libcrypt1,libgcrypt20,libgpg-error0,liblz4-1,libp11-kit0,libffi8,libidn2-0,libunistring5,libtasn1-6,libgnutls30t64,libsystemd0"
+# =================================================
+
+# Packages in VERIFIED_PKGS that are libraries (excluding libc6/libstdc++6/libgcc-s1).
+NONSTANDARD_LIB_CHECKS=(
+    "libssl3t64:libssl.so.*"
+    "zlib1g:libz.so.*"
+    "liblzma5:liblzma.so.*"
+    "libzstd1:libzstd.so.*"
+    "libbz2-1.0:libbz2.so.*"
+    "libcrypt1:libcrypt.so.*"
+    "libgcrypt20:libgcrypt.so.*"
+    "libgpg-error0:libgpg-error.so.*"
+    "liblz4-1:liblz4.so.*"
+    "libp11-kit0:libp11-kit.so.*"
+    "libffi8:libffi.so.*"
+    "libidn2-0:libidn2.so.*"
+    "libunistring5:libunistring.so.*"
+    "libtasn1-6:libtasn1.so.*"
+    "libgnutls30t64:libgnutls.so.*"
+    "libsystemd0:libsystemd.so.*"
+)
+
+find_lib_in_sysroot() {
+    local pattern="$1"
+    find \
+        "$TARGET_DIR/usr/lib" \
+        "$TARGET_DIR/usr/lib64" \
+        "$TARGET_DIR/lib" \
+        "$TARGET_DIR/lib64" \
+        -name "$pattern" 2>/dev/null | head -n 1
+}
+
+ensure_lib_from_pkg() {
+    local pkg="$1"
+    local pattern="$2"
+    local found
+    local deb_path
+
+    found="$(find_lib_in_sysroot "$pattern")"
+    if [ -n "$found" ]; then
+        echo "✅ Verified: Found $found"
+        return 0
+    fi
+
+    echo "WARNING: $pattern not found; trying cached .deb for $pkg..."
+    deb_path="$(awk -v p="$pkg" '$1==p {print $2; exit}' \
+        "$TARGET_DIR/debootstrap/debpaths" 2>/dev/null)"
+    if [ -n "$deb_path" ] && [ -f "$TARGET_DIR$deb_path" ]; then
+        sudo dpkg-deb -x "$TARGET_DIR$deb_path" "$TARGET_DIR"
+    fi
+
+    found="$(find_lib_in_sysroot "$pattern")"
+    if [ -n "$found" ]; then
+        echo "✅ Verified: Found $found"
+        return 0
+    fi
+
+    echo "❌ CRITICAL: $pattern not found after fallback."
+    echo "Hint: check $TARGET_DIR/debootstrap/debootstrap.log for dpkg errors."
+    return 1
+}
+
+check_nonstandard_libs() {
+    local entry pkg pattern
+    for entry in "${NONSTANDARD_LIB_CHECKS[@]}"; do
+        pkg="${entry%%:*}"
+        pattern="${entry#*:}"
+        if ! ensure_lib_from_pkg "$pkg" "$pattern"; then
+            return 1
+        fi
+    done
+}
 
 echo "=== 0. Prepare Build Env ==="
 sudo apt-get update
 sudo apt-get install -y wget curl binfmt-support
 
-echo ">>> Installing QEMU v10.0.4 (User Specified)..."
+# --- 1. 下载并安装 QEMU ---
+echo ">>> Installing QEMU v10.0.4..."
+rm -f qemu-package.tar.gz
 wget -O qemu-package.tar.gz https://github.com/loong64/binfmt/releases/download/deploy%2Fv10.0.4-10/qemu_v10.0.4_linux-amd64.tar.gz
-
-echo "Extracting tarball..."
 tar -xzvf qemu-package.tar.gz
-
-echo "Searching for qemu binary..."
 FOUND_BIN=$(find . -type f -name "qemu-loongarch64*" ! -name "*.tar.gz" | head -n 1)
+if [ -z "$FOUND_BIN" ]; then echo "Error: Binary not found!"; exit 1; fi
 
-if [ -z "$FOUND_BIN" ]; then
-    echo "Error: Could not find qemu-loongarch64 binary!"
-    ls -R
-    exit 1
-fi
-
-echo "Found binary at: $FOUND_BIN"
 sudo mv "$FOUND_BIN" /usr/bin/qemu-loongarch64-static
 sudo chmod +x /usr/bin/qemu-loongarch64-static
 rm qemu-package.tar.gz
 
-# === 注册 binfmt (必须保留 OCF) ===
-echo ">>> Registering LoongArch binfmt..."
-if [ -f /proc/sys/fs/binfmt_misc/register ]; then
-    if [ -f /proc/sys/fs/binfmt_misc/qemu-loongarch64 ]; then
-        echo -1 | sudo tee /proc/sys/fs/binfmt_misc/qemu-loongarch64 > /dev/null
-    fi
-    # 注册 Magic Number (OCF 标志是关键)
-    echo ':qemu-loongarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x02\x01:\xff\xff\xff\xff\xff\xff\xff\xfc\x00\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-loongarch64-static:OCF' | sudo tee /proc/sys/fs/binfmt_misc/register > /dev/null
-    echo "Binfmt registered with OCF flags."
-else
-    echo "Warning: binfmt_misc not mounted. Using docker fallback..."
-    docker run --rm --privileged multiarch/qemu-user-static --reset -p yes || true
+# --- 2. 重置 Binfmt ---
+echo "=== Registering LoongArch binfmt (Aggressive Mode) ==="
+if [ ! -d /proc/sys/fs/binfmt_misc ]; then
+    echo "Mounting binfmt_misc..."
+    sudo mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc
 fi
+if [ -f /proc/sys/fs/binfmt_misc/qemu-loongarch64 ]; then
+    echo -1 | sudo tee /proc/sys/fs/binfmt_misc/qemu-loongarch64 > /dev/null
+fi
+# 注意：这里我们使用了 F 标志，并指向宿主机的静态 QEMU
+echo ':qemu-loongarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x02\x01:\xff\xff\xff\xff\xff\xff\xff\xfc\x00\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-loongarch64-static:OCF' | sudo tee /proc/sys/fs/binfmt_misc/register > /dev/null
 
-echo ">>> Preparing Keyring..."
-REPO_URL="http://ftp.debian.org/debian/pool/main/d/debian-ports-archive-keyring/"
-LATEST_DEB=$(curl -s $REPO_URL | grep -o 'debian-ports-archive-keyring_[0-9.]\+_all.deb' | sort -V | tail -n 1)
-wget -q "${REPO_URL}${LATEST_DEB}"
-sudo dpkg -i "$LATEST_DEB"
-rm "$LATEST_DEB"
+# --- 3. 修复 Keyring ---
+echo ">>> Fetching latest Debian Ports Keyring..."
+KEY_TEMP="temp_keyring_extract"
+rm -rf "$KEY_TEMP"
+mkdir -p "$KEY_TEMP"
+KEYRING_URL="http://ftp.debian.org/debian/pool/main/d/debian-ports-archive-keyring/"
+LATEST_KEYRING_DEB=$(curl -s "$KEYRING_URL" | grep -o 'debian-ports-archive-keyring_[0-9.]\+_all.deb' | sort -V | tail -n 1)
+wget -q -O "$KEY_TEMP/keyring.deb" "${KEYRING_URL}${LATEST_KEYRING_DEB}"
+dpkg-deb -x "$KEY_TEMP/keyring.deb" "$KEY_TEMP/out"
+CUSTOM_KEYRING="$(pwd)/$KEY_TEMP/out/usr/share/keyrings/debian-ports-archive-keyring.gpg"
+echo "✅ Using fresh keyring: $CUSTOM_KEYRING"
 
+# --- 4. 准备 Debootstrap ---
 echo ">>> Preparing Debootstrap..."
 rm -rf debootstrap-master
 wget -q https://salsa.debian.org/installer-team/debootstrap/-/archive/master/debootstrap-master.tar.gz
 tar -xzf debootstrap-master.tar.gz
 cd debootstrap-master
 sudo make install
+DEBOOTSTRAP_BIN="$(command -v debootstrap || true)"
+if [ -z "$DEBOOTSTRAP_BIN" ]; then
+    for candidate in /usr/local/sbin/debootstrap /usr/sbin/debootstrap; do
+        if [ -x "$candidate" ]; then
+            DEBOOTSTRAP_BIN="$candidate"
+            break
+        fi
+    done
+fi
+if [ -z "$DEBOOTSTRAP_BIN" ]; then
+    echo "Error: debootstrap not found in PATH after install!"
+    exit 1
+fi
 cd ..
 
-echo "=== 1. Start Build Debootstrap (First Stage) ==="
-PACKAGES="libc6,libstdc++6,libgcc-s1,libssl3t64,zlib1g,liblzma5,libzstd1,libbz2-1.0,libcrypt1,perl-base,bash,libgcrypt20,libgpg-error0,liblz4-1,libp11-kit0,libidn2-0,libunistring5,libtasn1-6,libgnutls30t64"
+echo "=== 1. Start Build Debootstrap (Download Stage) ==="
+if [ -d "$TARGET_DIR" ]; then sudo rm -rf "$TARGET_DIR"; fi
 sudo mkdir -p "$TARGET_DIR"
 
-echo "Running debootstrap (Stage 1)..."
-sudo debootstrap --arch="$ARCH" --foreign --keyring=/usr/share/keyrings/debian-ports-archive-keyring.gpg --include="$PACKAGES" "$DISTRO" "$TARGET_DIR" "$MIRROR"
+echo "Running debootstrap Stage 1..."
+sudo "$DEBOOTSTRAP_BIN" --arch="$ARCH" \
+    --foreign \
+    --keyring="$CUSTOM_KEYRING" \
+    --include="$VERIFIED_PKGS" \
+    "$DISTRO" "$TARGET_DIR" "$MIRROR"
 
-echo "=== 2. Config (Second Stage) ==="
+# 清理临时密钥
+rm -rf "$KEY_TEMP"
+
+echo "=== 2. Config (Install Stage) ==="
 sudo cp /usr/bin/qemu-loongarch64-static "$TARGET_DIR/usr/bin/"
-
-# 1. 修复 /bin/sh (必须)
-echo "Fixing /bin/sh symlink..."
 sudo ln -sf /bin/bash "$TARGET_DIR/bin/sh"
 
-# 2. 【核心修改】将第二阶段命令写入 chroot 内的一个脚本文件
-# 这样 QEMU 只需要执行一个简单的文件名，不需要处理复杂的参数字符串
-cat <<EOF | sudo tee "$TARGET_DIR/stage2_runner.sh" > /dev/null
+echo ">>> Pre-flight Check..."
+if ! sudo chroot "$TARGET_DIR" /bin/true; then
+    echo "❌ FATAL ERROR: Unable to execute binaries inside chroot!"
+    exit 1
+fi
+
+echo ">>> Running Debootstrap Second Stage (internal runner)..."
+cat <<'EOF' | sudo tee "$TARGET_DIR/stage2_runner.sh" > /dev/null
 #!/bin/bash
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 echo "Starting Second Stage inside chroot..."
 /debootstrap/debootstrap --second-stage
 EOF
-
-# 3. 给脚本执行权限
 sudo chmod +x "$TARGET_DIR/stage2_runner.sh"
-
-echo "Running second-stage configuration via internal script..."
-# 4. 执行脚本 (路径非常简单，不会被 QEMU 解析错)
 sudo chroot "$TARGET_DIR" /stage2_runner.sh
-
-# 5. 清理脚本
 sudo rm "$TARGET_DIR/stage2_runner.sh"
 
-echo "=== 3. Clean & Fix ==="
-sudo rm -rf "$TARGET_DIR/var/cache/apt/archives/*"
-sudo rm "$TARGET_DIR/usr/bin/qemu-loongarch64-static"
+echo ">>> Verifying Non-Standard Libraries..."
+if ! check_nonstandard_libs; then
+    exit 1
+fi
 
-echo "Fixing symlinks..."
+# ==========================================
+# 3. Post-Fixes & Symlinks
+# ==========================================
+echo "=== 3. Clean & Fix ==="
+sudo rm "$TARGET_DIR/usr/bin/qemu-loongarch64-static"
+sudo rm -rf "$TARGET_DIR/var/cache/apt/archives/*.deb"
+
+echo "Applying Symlink Hacks..."
+LIB_DIR="$TARGET_DIR/usr/lib/loongarch64-linux-gnu"
+
+# 1. libunistring
+if [ -f "$LIB_DIR/libunistring.so.5" ]; then
+    sudo ln -sf libunistring.so.5 "$LIB_DIR/libunistring.so.2"
+fi
+
+# 2. libgnutls
+if [ ! -f "$LIB_DIR/libgnutls.so.30" ]; then
+    REAL_LIB=$(find "$LIB_DIR" -name "libgnutls.so.30.*" -printf "%f\n" | head -n 1)
+    if [ -n "$REAL_LIB" ]; then
+        sudo ln -sf "$REAL_LIB" "$LIB_DIR/libgnutls.so.30"
+    fi
+fi
+# Box64 may dlopen libgnutls.so (unversioned).
+if [ ! -f "$LIB_DIR/libgnutls.so" ]; then
+    REAL_LIB=$(find "$LIB_DIR" -name "libgnutls.so.30.*" -printf "%f\n" | head -n 1)
+    if [ -n "$REAL_LIB" ]; then
+        sudo ln -sf "$REAL_LIB" "$LIB_DIR/libgnutls.so"
+    fi
+fi
+
 if [ -f "scripts/fix_links.py" ]; then sudo python3 scripts/fix_links.py "$TARGET_DIR"; fi
 
 # ==========================================
-# 新增: 4. Package Runtime Libs (Box64 专用精简包)
+# 4. Package Runtime Libs
 # ==========================================
 echo "=== 4. Package Runtime Libs (For Box64) ==="
 RUNTIME_TAR="debian-${DISTRO}-${ARCH}-runtime-libs.tar.gz"
 TEMP_RUNTIME="runtime-libs-temp"
-
-# 1. 创建临时目录结构
-echo "Creating minimal runtime structure..."
 rm -rf "$TEMP_RUNTIME"
 mkdir -p "$TEMP_RUNTIME/usr"
 
-# 2. 只复制 Box64 运行需要的关键库目录
-# 使用 cp -a 极其重要，必须保留软链接关系！
 echo "Copying libraries..."
-sudo cp -a "$TARGET_DIR/lib" "$TEMP_RUNTIME/"
-sudo cp -a "$TARGET_DIR/lib64" "$TEMP_RUNTIME/"
-sudo cp -a "$TARGET_DIR/usr/lib" "$TEMP_RUNTIME/usr/"
-sudo cp -a "$TARGET_DIR/usr/lib64" "$TEMP_RUNTIME/usr/"
-# 复制 etc 是为了 ld.so.conf 等配置
-sudo cp -a "$TARGET_DIR/etc" "$TEMP_RUNTIME/"
+sudo cp -a "$TARGET_DIR/lib" "$TEMP_RUNTIME/" || true
+sudo cp -a "$TARGET_DIR/lib64" "$TEMP_RUNTIME/" || true
+sudo cp -a "$TARGET_DIR/usr/lib" "$TEMP_RUNTIME/usr/" || true
+sudo cp -a "$TARGET_DIR/usr/lib64" "$TEMP_RUNTIME/usr/" || true
+sudo cp -a "$TARGET_DIR/etc" "$TEMP_RUNTIME/" || true
 
-# 3. 打包精简版
 echo "Packaging Runtime Artifact: $RUNTIME_TAR ..."
 sudo tar -czf "$RUNTIME_TAR" -C "$TEMP_RUNTIME" .
 sudo chown $USER:$USER "$RUNTIME_TAR"
-
-# 4. 清理临时目录
 sudo rm -rf "$TEMP_RUNTIME"
 
 # ==========================================
-# 原有: 5. Package Full Sysroot (完整开发包)
+# 5. Package Full Sysroot
 # ==========================================
 echo "=== 5. Package Full Sysroot ==="
 FULL_TAR="debian-${DISTRO}-${ARCH}-sysroot.tar.gz"
@@ -139,7 +247,4 @@ echo "Packaging Full Artifact: $FULL_TAR ..."
 sudo tar -czf "$FULL_TAR" -C "$TARGET_DIR" .
 sudo chown $USER:$USER "$FULL_TAR"
 
-echo "Build Success!"
-echo "Generated Artifacts:"
-echo "1. $FULL_TAR (Full Sysroot)"
-echo "2. $RUNTIME_TAR (Runtime Libs Only)"
+echo "🎉 Build Success!"
