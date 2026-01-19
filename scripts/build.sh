@@ -9,25 +9,19 @@ MIRROR="http://ftp.ports.debian.org/debian-ports"
 
 echo "=== 0. Prepare Build Env ==="
 sudo apt-get update
-# 安装基础工具，包括 curl (用于抓取文件名)
 sudo apt-get install -y qemu-user-static wget curl
 
 echo ">>> Detecting and installing latest Debian Ports Keyring..."
-# 1. 定义仓库目录 URL
 REPO_URL="http://ftp.debian.org/debian/pool/main/d/debian-ports-archive-keyring/"
-
-# 2. 动态获取最新的包名 (不要写死版本号)
-# 逻辑：获取网页内容 -> 提取 .deb 文件名 -> 版本号排序 -> 取最新的一个
+# 获取最新包名
 LATEST_DEB=$(curl -s $REPO_URL | grep -o 'debian-ports-archive-keyring_[0-9.]\+_all.deb' | sort -V | tail -n 1)
 
 if [ -z "$LATEST_DEB" ]; then
-    echo "Error: Failed to detect latest keyring version. Network issue?"
+    echo "Error: Failed to detect latest keyring version."
     exit 1
 fi
 
 echo "Found latest keyring: $LATEST_DEB"
-
-# 3. 下载并安装
 wget "${REPO_URL}${LATEST_DEB}"
 sudo dpkg -i "$LATEST_DEB"
 rm "$LATEST_DEB"
@@ -41,5 +35,33 @@ sudo make install
 cd ..
 
 echo "=== 1. Start Build Debootstrap (First Stage) ==="
-# Box64 运行环境所需的库 (使用 t64 后缀适配 Sid)
-PACKAGES="libc6,libstdc++6,libgcc-s1,libssl3t64,zlib1g,
+# 定义包列表
+PACKAGES="libc6,libstdc++6,libgcc-s1,libssl3t64,zlib1g,liblzma5,libzstd1t64,libbz2-1.0,libcrypt1t64,perl-base"
+
+sudo mkdir -p "$TARGET_DIR"
+
+echo "Running debootstrap..."
+# === 修改点：将命令合并为一行，防止换行符引发的语法错误 ===
+sudo debootstrap --arch="$ARCH" --foreign --keyring=/usr/share/keyrings/debian-ports-archive-keyring.gpg --include="$PACKAGES" "$DISTRO" "$TARGET_DIR" "$MIRROR"
+
+echo "=== 2. Config (Second Stage) ==="
+sudo cp /usr/bin/qemu-loongarch64-static "$TARGET_DIR/usr/bin/"
+sudo chroot "$TARGET_DIR" /debootstrap/debootstrap --second-stage
+
+echo "=== 3. Clean & Fix ==="
+sudo rm -rf "$TARGET_DIR/var/cache/apt/archives/*"
+sudo rm "$TARGET_DIR/usr/bin/qemu-loongarch64-static"
+
+echo "Fixing symlinks..."
+if [ -f "scripts/fix_links.py" ]; then
+    sudo python3 scripts/fix_links.py "$TARGET_DIR"
+else
+    echo "Warning: scripts/fix_links.py not found!"
+fi
+
+echo "=== 4. Package ==="
+TAR_NAME="debian-${DISTRO}-${ARCH}-sysroot.tar.gz"
+sudo tar -czf "$TAR_NAME" -C "$TARGET_DIR" .
+sudo chown $USER:$USER "$TAR_NAME"
+
+echo "Build Success! Artifact: $TAR_NAME"
