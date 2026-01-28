@@ -9,7 +9,7 @@ TARGET_DIR="sysroot-loong64"
 MIRROR="${MIRROR:-http://ftp.ports.debian.org/debian-ports}"
 
 # ✅ 包列表 (保持不变)
-VERIFIED_PKGS="ca-certificates,wget,curl,perl-base,bash,usr-is-merged,libc6,libstdc++6,libgcc-s1,libssl3t64,zlib1g,liblzma5,libzstd1,libbz2-1.0,libcrypt1,libgcrypt20,libgpg-error0,liblz4-1,libp11-kit0,libffi8,libidn2-0,libunistring5,libtasn1-6,libgnutls30t64,libsystemd0"
+VERIFIED_PKGS="ca-certificates,wget,curl,perl-base,bash,usr-is-merged,libc6,libstdc++6,libgcc-s1,libssl3t64,zlib1g,liblzma5,libzstd1,libbz2-1.0,libcrypt1,libgcrypt20,libgpg-error0,liblz4-1,libp11-kit0,libffi8,libidn2-0,libunistring5,libtasn1-6,libgnutls30t64,libsystemd0,libglib2.0-0t64,libxml2,libsqlite3-0,libatomic1,libpsl5t64,libgssapi-krb5-2,libkrb5-3,libbrotli1,libevent-2.1-7t64,libkeyutils1,libcom-err2,libkrb5support0,libk5crypto3"
 # =================================================
 
 # Packages in VERIFIED_PKGS that are libraries (excluding libc6/libstdc++6/libgcc-s1).
@@ -30,6 +30,21 @@ NONSTANDARD_LIB_CHECKS=(
     "libtasn1-6:libtasn1.so.*"
     "libgnutls30t64:libgnutls.so.*"
     "libsystemd0:libsystemd.so.*"
+    "libglib2.0-0t64:libglib-2.0.so.*"
+    "libglib2.0-0t64:libgobject-2.0.so.*"
+    "libglib2.0-0t64:libgio-2.0.so.*"
+    "libxml2:libxml2.so.*"
+    "libsqlite3-0:libsqlite3.so.*"
+    "libatomic1:libatomic.so.*"
+    "libpsl5t64:libpsl.so.*"
+    "libgssapi-krb5-2:libgssapi_krb5.so.*"
+    "libkrb5-3:libkrb5.so.*"
+    "libbrotli1:libbrotlidec.so.*"
+    "libevent-2.1-7t64:libevent-2.1.so.*"
+    "libkeyutils1:libkeyutils.so.*"
+    "libcom-err2:libcom_err.so.*"
+    "libkrb5support0:libkrb5support.so.*"
+    "libk5crypto3:libk5crypto.so.*"
 )
 
 find_lib_in_sysroot() {
