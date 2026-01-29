@@ -1,0 +1,67 @@
+name: Build AOSC Sysroot
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - "main"
+
+permissions:
+  contents: write
+
+env:
+  AOSC_IMAGE: "ghcr.io/loong64/aosc-os-container:20251206"
+
+jobs:
+  build-release:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: loongarch64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install binfmt (loong64)
+        run: |
+          docker run --privileged --rm ghcr.io/loong64/tonistiigi/binfmt --uninstall qemu-*
+          docker run --privileged --rm ghcr.io/loong64/tonistiigi/binfmt --install all
+
+      - name: Run AOSC Sysroot Build (loong64 container)
+        run: |
+          echo "Running AOSC sysroot build in loong64 container..."
+          chmod +x scripts/build_aosc.sh
+          docker run --rm --platform=linux/loong64 --entrypoint /bin/bash \
+            -v "$PWD:/work" -w /work \
+            -e BASH_ENV=/dev/null \
+            -e ENV=/dev/null \
+            -e AOSC_PKGS="openssl glib2 libgomp" \
+            "$AOSC_IMAGE" \
+            --noprofile --norc -c "./scripts/build_aosc.sh"
+
+      - name: Upload Artifact (Manual/Branch Build)
+        if: (!startsWith(github.ref, 'refs/tags/'))
+        uses: actions/upload-artifact@v4
+        with:
+          name: loongarch-sysroot-bundle
+          path: ./*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Create Release and Upload Asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          name: LoongArch Sysroot ${{ github.ref_name }}
+          files: ./*.tar.gz
+          draft: false
+          prerelease: false
+          generate_release_notes: true
